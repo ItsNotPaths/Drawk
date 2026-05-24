@@ -180,6 +180,26 @@ proc drawkMessage(element: ptr Element, m: Message, di: cint,
 
 # ---------- main ----------
 
+proc parseThemeArg(): string =
+  ## --theme NAME / --theme=NAME / -t NAME. NAME is either a local theme
+  ## name (matched against ~/.config/Drawk/themes and ./themes) or the
+  ## sentinel "global", which reads Thrawk's ~/.config/unrawk/active.theme.
+  result = globalThemeName
+  let args = commandLineParams()
+  var i = 0
+  while i < args.len:
+    let a = args[i]
+    if a == "--theme" or a == "-t":
+      if i + 1 < args.len:
+        result = args[i + 1]
+        inc i, 2
+        continue
+    elif a.startsWith("--theme="):
+      result = a[len("--theme=") .. ^1]
+    inc i
+
+let themeArg = parseThemeArg()
+
 var stdinItems: seq[string] = @[]
 for line in stdin.lines:
   stdinItems.add(line)
@@ -187,7 +207,7 @@ if stdinItems.len == 0:
   quit(1)
 
 initialise()
-loadInitialTheme()
+loadInitialTheme(themeArg)
 loadFont()
 
 let win = windowCreate(nil, 0, "Drawk", windowW, windowH)

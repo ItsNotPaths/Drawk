@@ -58,8 +58,24 @@ at creation.
 Drawk follows the rawk family palette convention. Default is gruvbox
 material dark, baked in at `src/theme.nim`. Override per-user by dropping a
 `.theme` file in `~/.config/Drawk/themes/` — same format as Edrawk's
-`themes/default.theme`. To switch the active theme, edit
-`src/theme.nim`'s `activeTheme` (no runtime config file yet).
+`themes/default.theme`.
+
+Pick the active palette with `--theme NAME` on the command line:
+
+| `--theme` value | Source                                                          |
+| --------------- | --------------------------------------------------------------- |
+| `global`        | `~/.config/unrawk/active.theme` (whatever Thrawk last wrote)    |
+| `gruvbox`       | `themes/gruvbox.theme` (any name matching a local `.theme` file) |
+| omitted         | same as `--theme global`                                        |
+
+If `global` is requested but Thrawk hasn't written `active.theme` yet, or
+the named file is missing/unparseable, Drawk falls back to the baked-in
+gruvbox palette. Put the flag in your sway binding:
+
+```
+bindsym $mod+d exec --no-startup-id sh -c \
+  '... | Drawk --theme global | xargs -r swaymsg exec --'
+```
 
 Font follows `fc-match monospace:mono` by default; override with the
 `RAWK_FONT` environment variable pointing at a TTF path.

@@ -29,11 +29,15 @@ const gruvboxMaterialDark* = Palette(
   clInject:       0xff0000'u32,
 )
 
+const globalThemeName* = "global"
+  ## Sentinel passed via `--theme global` (the default). Tells Drawk to
+  ## adopt whatever palette Thrawk last wrote to ~/.config/unrawk/active.theme.
+
 var
   # Themes ship as themes/gruvbox.theme and themes/zenburn.theme. If neither
   # is found at runtime, `loadInitialTheme` falls back to the hardcoded
   # `gruvboxMaterialDark` palette above.
-  activeTheme*: string = "gruvbox"
+  activeTheme*: string = globalThemeName
   discoveredThemes: seq[string]
 
 proc themeDirs(): seq[string] =
@@ -126,8 +130,31 @@ proc loadThemeByName*(name: string): bool =
   activeTheme = name
   return true
 
-proc loadInitialTheme*() =
+proc globalThemePath*(): string =
+  ## Path Thrawk writes via `Thrawk --emit-active <name>`. Verbatim theme
+  ## body in the same key:value format parsePalette consumes.
+  getHomeDir() / ".config" / "unrawk" / "active.theme"
+
+proc loadGlobalTheme*(): bool =
+  let path = globalThemePath()
+  if not fileExists(path): return false
+  var body: string
+  try: body = readFile(path)
+  except IOError: return false
+  var p = gruvboxMaterialDark
+  if not parsePalette(body, p): return false
+  apply(p)
+  activeTheme = globalThemeName
+  return true
+
+proc loadInitialTheme*(name: string = globalThemeName) =
+  ## `name` comes from the `--theme` CLI flag. "global" reads Thrawk's
+  ## active.theme; any other string is looked up in the local themes dirs.
+  ## Always succeeds — falls back to the baked-in gruvbox palette.
   discoverThemes()
-  if not loadThemeByName(activeTheme):
-    apply(gruvboxMaterialDark)
-    activeTheme = "gruvbox"
+  if name == globalThemeName:
+    if loadGlobalTheme(): return
+  elif loadThemeByName(name):
+    return
+  apply(gruvboxMaterialDark)
+  activeTheme = "gruvbox"
