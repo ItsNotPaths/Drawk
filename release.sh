@@ -3,6 +3,8 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_NAME="$(basename "$PROJECT_DIR")"
+# Project dir and binary share the name "Drawk" (Drawk.nimble: bin = @["Drawk"]).
+BIN_NAME="Drawk"
 RELEASE_DIR="$(cd "$PROJECT_DIR/.." && pwd)/${PROJECT_NAME}-release"
 
 usage() {
@@ -41,12 +43,48 @@ if [ $DO_LOCAL -eq 1 ]; then
     echo "==> Local build: $PROJECT_NAME -> $RELEASE_DIR"
     rm -rf "$RELEASE_DIR"
     mkdir -p "$RELEASE_DIR"
-nim c -d:release --opt:speed \
-    -o:"$RELEASE_DIR/$PROJECT_NAME" \
-    "$PROJECT_DIR/src/$PROJECT_NAME.nim"
-    [ -f "$PROJECT_DIR/README.md" ] && cp "$PROJECT_DIR/README.md" "$RELEASE_DIR/" || true
-    [ -f "$PROJECT_DIR/LICENSE" ]   && cp "$PROJECT_DIR/LICENSE"   "$RELEASE_DIR/" || true
-    echo "==> Local done: $RELEASE_DIR"
+
+    if [ ! -f /usr/include/wayland-client.h ] && \
+       ! pkg-config --exists wayland-client 2>/dev/null; then
+        echo "error: wayland-client headers not found (libwayland-dev)" >&2
+        exit 1
+    fi
+
+    # Size-trimming flag set — kept in sync with .github/workflows/release.yml
+    # so what we test locally matches what CI ships:
+    #   -d:danger / -d:strip / -d:lto / -d:noSignalHandler
+    #   --threads:off / --panics:on / --stackTrace:off / --lineTrace:off
+    #   -fno-pie / -ffunction-sections / -fdata-sections /
+    #     -fno-asynchronous-unwind-tables / -fno-unwind-tables /
+    #     -fno-stack-protector
+    #   -Wl,--gc-sections / -Wl,--build-id=none / -Wl,-z,norelro
+    BIN_OUT="$RELEASE_DIR/$BIN_NAME"
+    echo "  -> Wayland build"
+    ( cd "$PROJECT_DIR" && \
+      nim c --opt:size -d:danger -d:strip -d:lto \
+            -d:noSignalHandler -d:wayland \
+            --threads:off --panics:on \
+            --stackTrace:off --lineTrace:off \
+            --passC:-fno-pie --passL:-no-pie \
+            --passC:-ffunction-sections --passC:-fdata-sections \
+            --passC:-fno-asynchronous-unwind-tables \
+            --passC:-fno-unwind-tables \
+            --passC:-fno-stack-protector \
+            --passL:-Wl,--gc-sections \
+            --passL:-Wl,--build-id=none \
+            --passL:-Wl,-z,norelro \
+            --nimcache:"$RELEASE_DIR/.nimcache" \
+            --out:"$BIN_OUT" "src/${BIN_NAME}.nim" )
+
+    [ -f "$PROJECT_DIR/README.md" ] && cp -f "$PROJECT_DIR/README.md" "$RELEASE_DIR/" || true
+    [ -f "$PROJECT_DIR/LICENSE" ]   && cp -f "$PROJECT_DIR/LICENSE"   "$RELEASE_DIR/" || true
+    if [ -d "$PROJECT_DIR/themes" ]; then
+        rm -rf "$RELEASE_DIR/themes"
+        cp -R "$PROJECT_DIR/themes" "$RELEASE_DIR/themes"
+    fi
+
+    echo "==> Local done:"
+    [ -f "$BIN_OUT" ] && echo "    $BIN_OUT ($(du -h "$BIN_OUT" | cut -f1))"
 fi
 
 if [ $DO_PUBLIC -eq 1 ]; then

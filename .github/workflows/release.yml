@@ -7,7 +7,7 @@ on:
         required: true
         type: string
       notes:
-        description: 'Release notes'
+        description: 'Release notes / body'
         required: false
         type: string
         default: ''
@@ -23,113 +23,107 @@ env:
 jobs:
   build-linux:
     runs-on: ubuntu-latest
-    # TODO: if you need an older glibc floor, switch to a container like:
-    #   container: ubuntu:20.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.0.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve dep HEADs
+        # Cache key alone (download-deps.sh hash) doesn't change when our
+        # vendored repos move forward, which would bake stale luigi.h
+        # patches into releases. Hash the remote HEADs into the key so
+        # any dep update invalidates the cache and triggers a fresh fetch.
+        id: dep-heads
+        run: |
+          luigi_sha=$(git ls-remote https://github.com/ItsNotPaths/wayluigi.git HEAD | cut -f1)
+          rl_sha=$(git ls-remote https://github.com/ItsNotPaths/rawk-luigi.git HEAD | cut -f1)
+          echo "key=${luigi_sha:0:12}-${rl_sha:0:12}" >> "$GITHUB_OUTPUT"
 
       - name: Cache vendor/
         uses: actions/cache@v4
         with:
           path: vendor
-          key: vendor-linux-${{ hashFiles('download-deps.sh') }}
+          key: vendor-linux-${{ hashFiles('download-deps.sh') }}-${{ steps.dep-heads.outputs.key }}
 
       - name: Download deps
         run: |
           chmod +x ./download-deps.sh
           ./download-deps.sh
 
-      - name: Install toolchain
-        run: |
-          curl -fsSL https://nim-lang.org/download/nim-2.2.4-linux_x64.tar.xz | tar xJ -C /opt
-          echo /opt/nim-2.2.4/bin >> $GITHUB_PATH
-
-      - name: Build
-        run: |
-          # TODO: tune for your project (extra -d flags, SDL2 includes, etc.)
-          nim c -d:release --opt:speed -o:"$PROJECT_NAME" "src/$PROJECT_NAME.nim"
-          strip --strip-all "$PROJECT_NAME"
-
-      - name: Stage artifacts
-        run: |
-          mkdir -p dist
-          # TODO: copy the files you want in the linux release into dist/
-          [ -f "$PROJECT_NAME" ] && cp "$PROJECT_NAME" dist/ || true
-          [ -d dist-stage ] && cp -r dist-stage/. dist/ || true
-          [ -f README.md ] && cp README.md dist/ || true
-          [ -f LICENSE ] && cp LICENSE dist/ || true
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: linux-zip
-          path: dist
-
-  build-windows:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Cache vendor/
-        uses: actions/cache@v4
-        with:
-          path: vendor
-          key: vendor-windows-${{ hashFiles('download-deps.sh') }}
-
-      - name: Download deps
-        run: |
-          chmod +x ./download-deps.sh
-          ./download-deps.sh
-
-      - name: Install toolchain
+      - name: Install wayland dev headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64
-          curl -fsSL https://nim-lang.org/download/nim-2.2.4-linux_x64.tar.xz | tar xJ -C /opt
-          echo /opt/nim-2.2.4/bin >> $GITHUB_PATH
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev libfreetype-dev fontconfig
+
+      - name: Install freetype Nim package
+        run: nimble install -y freetype@0.1.2
 
       - name: Build
+        # Mirrors release.sh's --local flag set. Same trim spec the rawk
+        # suite (Prawk/Edrawk/Exrawk) uses — see release.sh for the
+        # per-flag rationale.
         run: |
-          # TODO: nim cross-compile to Windows needs per-project tuning
-          # (vendor paths, extra --passL flags for SDL2, etc.)
-          nim c -d:release --cpu:amd64 --os:windows \
-              --gcc.exe:x86_64-w64-mingw32-gcc \
-              --gcc.linkerexe:x86_64-w64-mingw32-gcc \
-              -o:"$PROJECT_NAME.exe" "src/$PROJECT_NAME.nim"
+          nim c --opt:size -d:danger -d:strip -d:lto \
+                -d:noSignalHandler -d:wayland \
+                --threads:off --panics:on \
+                --stackTrace:off --lineTrace:off \
+                --passC:-fno-pie --passL:-no-pie \
+                --passC:-ffunction-sections --passC:-fdata-sections \
+                --passC:-fno-asynchronous-unwind-tables \
+                --passC:-fno-unwind-tables \
+                --passC:-fno-stack-protector \
+                --passL:-Wl,--gc-sections \
+                --passL:-Wl,--build-id=none \
+                --passL:-Wl,-z,norelro \
+                --out:"${PROJECT_NAME}" "src/${PROJECT_NAME}.nim"
+          strip --strip-all "${PROJECT_NAME}" || true
+
+      - name: Size guard (<=300 KB)
+        # Drawk is the rawk-family's smallest app — no editor, no syntax
+        # highlighting, no tabs. 300 KB surfaces any regression.
+        run: |
+          BYTES=$(stat -c%s "${PROJECT_NAME}")
+          echo "binary size: ${BYTES}"
+          if [ "$BYTES" -gt 307200 ]; then
+            echo "binary exceeds 300 KB budget (${BYTES} > 307200)" >&2
+            exit 1
+          fi
 
       - name: Stage artifacts
         run: |
           mkdir -p dist
-          # TODO: copy the files you want in the windows release into dist/
-          [ -f "${PROJECT_NAME}.exe" ] && cp "${PROJECT_NAME}.exe" dist/ || true
-          [ -d dist-stage ] && cp -r dist-stage/. dist/ || true
+          cp "${PROJECT_NAME}" dist/
           [ -f README.md ] && cp README.md dist/ || true
-          [ -f LICENSE ] && cp LICENSE dist/ || true
+          [ -f LICENSE ]   && cp LICENSE   dist/ || true
+          [ -d themes ]    && cp -R themes dist/ || true
 
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-zip
+          name: linux-wayland
           path: dist
 
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: linux-zip
-          path: linux-zip
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-zip
-          path: windows-zip
+          name: linux-wayland
+          path: linux-wayland
 
       - name: Package
         run: |
-          (cd linux-zip && zip -r "../${PROJECT_NAME}-linux.zip" .)
-          (cd windows-zip && zip -r "../${PROJECT_NAME}-windows.zip" .)
+          # actions/upload-artifact strips the exec bit on upload, so the
+          # downloaded tree comes back mode 644. Restore +x on the binary
+          # before zipping or users get 126 (Permission denied) on launch.
+          chmod +x "linux-wayland/${PROJECT_NAME}"
+          (cd linux-wayland && zip -r "../${PROJECT_NAME}-linux-wayland.zip" .)
 
       - name: Create release
         env:
@@ -140,8 +134,8 @@ jobs:
             PRERELEASE_FLAG="--prerelease"
           fi
           gh release create "${{ inputs.version }}" \
-              "${PROJECT_NAME}-linux.zip" \
-              "${PROJECT_NAME}-windows.zip" \
+              "${PROJECT_NAME}-linux-wayland.zip" \
+              --repo "${{ github.repository }}" \
               --title "${{ inputs.version }}" \
               --notes "${{ inputs.notes }}" \
               $PRERELEASE_FLAG
