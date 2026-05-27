@@ -53,6 +53,7 @@ type Drawk = object
   scroll*:       int
   caretVisible*: bool
   blinkTicks*:   int
+  inputMode*:    bool       # true: no list, Enter prints query verbatim
 
 proc rowHeight(): cint =
   let gh = if ui.activeFont != nil: ui.activeFont.glyphHeight else: 16.cint
@@ -87,7 +88,7 @@ proc paint(d: ptr Drawk, p: ptr Painter) =
              ui.theme.text, ALIGN_CENTER)
 
   # 3. Visible filtered rows.
-  if d.filtered.len == 0: return
+  if d.inputMode or d.filtered.len == 0: return
   let listTop = b.t + rowH
   let listH   = b.b - listTop
   if listH <= 0: return
@@ -118,6 +119,10 @@ proc handleKey(d: ptr Drawk, k: ptr KeyTyped): cint =
   if k.code == int(KEYCODE_ESCAPE):
     quit(1)
   elif k.code == int(KEYCODE_ENTER):
+    if d.inputMode:
+      stdout.writeLine(d.query)
+      stdout.flushFile()
+      quit(0)
     if d.filtered.len > 0:
       stdout.writeLine(d.items[d.filtered[d.selected]])
       stdout.flushFile()
@@ -180,34 +185,41 @@ proc drawkMessage(element: ptr Element, m: Message, di: cint,
 
 # ---------- main ----------
 
-proc parseThemeArg(): string =
-  ## --theme NAME / --theme=NAME / -t NAME. NAME is either a local theme
-  ## name (matched against ~/.config/Drawk/themes and ./themes) or the
-  ## sentinel "global", which reads Thrawk's ~/.config/unrawk/active.theme.
-  result = globalThemeName
+type CliArgs = object
+  theme:     string
+  inputMode: bool
+
+proc parseArgs(): CliArgs =
+  ## --theme NAME / --theme=NAME / -t NAME chooses the palette (see theme.nim).
+  ## --input / -i puts Drawk in text-entry mode: stdin is ignored, no list is
+  ## shown, and Enter prints the typed query to stdout.
+  result.theme = globalThemeName
   let args = commandLineParams()
   var i = 0
   while i < args.len:
     let a = args[i]
     if a == "--theme" or a == "-t":
       if i + 1 < args.len:
-        result = args[i + 1]
+        result.theme = args[i + 1]
         inc i, 2
         continue
     elif a.startsWith("--theme="):
-      result = a[len("--theme=") .. ^1]
+      result.theme = a[len("--theme=") .. ^1]
+    elif a == "--input" or a == "-i":
+      result.inputMode = true
     inc i
 
-let themeArg = parseThemeArg()
+let cli = parseArgs()
 
 var stdinItems: seq[string] = @[]
-for line in stdin.lines:
-  stdinItems.add(line)
-if stdinItems.len == 0:
-  quit(1)
+if not cli.inputMode:
+  for line in stdin.lines:
+    stdinItems.add(line)
+  if stdinItems.len == 0:
+    quit(1)
 
 initialise()
-loadInitialTheme(themeArg)
+loadInitialTheme(cli.theme)
 loadFont()
 
 let win = windowCreate(nil, 0, "Drawk", windowW, windowH)
@@ -224,6 +236,7 @@ d.selected     = 0
 d.scroll       = 0
 d.caretVisible = true
 d.blinkTicks   = 0
+d.inputMode    = cli.inputMode
 recomputeFilter(d)
 
 elementFocus(elemPtr)
